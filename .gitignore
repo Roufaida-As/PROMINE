@@ -1,3 +1,4 @@
 .env
 __pycache__/
-.csv
+prompt_commits.csv
+target_repos.csv
