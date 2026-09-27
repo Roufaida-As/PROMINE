@@ -81,8 +81,7 @@ def setup_venv_with_repo_deps(work_dir, venv_dir):
     env["VIRTUAL_ENV"] = venv_dir
     env["PATH"] = os.path.dirname(python_bin) + os.pathsep + env.get("PATH", "")
 
-    code, log = run_cmd(f'"{python_bin}" -m pip install --upgrade pip pytest',
-                         cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
+    code, log = run_cmd(f'"{python_bin}" -m pip install --upgrade pip pytest pytest-mock pytest-asyncio pytest-json-report', cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
     if code != 0:
         return python_bin, pytest_bin, env, False, "pip/pytest bootstrap failed:\n" + log[-1200:]
 
