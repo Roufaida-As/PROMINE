@@ -102,7 +102,7 @@ def execute_step3_strict():
     print("=== Step 3: Strict Attribute-Based Consumer Filtering (variable-match first) ===\n")
 
     if not os.path.exists(CSV_INPUT):
-        print(f"❌ Error: {CSV_INPUT} not found! Run Step 2 first.")
+        print(f" Error: {CSV_INPUT} not found! Run Step 2 first.")
         return
 
     with open(CSV_INPUT, mode="r", encoding="utf-8") as f:
