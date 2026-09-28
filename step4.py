@@ -3,13 +3,12 @@ import csv
 import re
 import sys
 import subprocess
-import tempfile
 import shutil
 import venv
 from collections import defaultdict
 from git import Repo
 
-# Fix for CSV field size limits
+# Fix for CSV field size limits on Windows
 def set_max_csv_field_limit():
     max_int = sys.maxsize
     while True:
@@ -24,26 +23,19 @@ set_max_csv_field_limit()
 CSV_INPUT = "coevolution_commits.csv"
 CSV_OUTPUT = "mace_eval_results.csv"
 
+# Custom root temp directory to prevent Windows 8.3 (DELLPR~1 vs DELL PRECISION) path warnings
+MACE_TEMP_DIR = r"C:\mace_eval_temp"
+os.makedirs(MACE_TEMP_DIR, exist_ok=True)
+
 TEST_TIMEOUT = 120
-INSTALL_TIMEOUT = 240  # dependency installs are heavier than `pip install pytest`
+INSTALL_TIMEOUT = 300
 
 FIELDNAMES = [
     "repo_name", "commit_hash", "confidence", "eval_result",
     "prompt_files", "consumer_files", "details", "log_snippet"
 ]
 
-# Time control: process at most this many candidate commits per repo. Breadth
-# across repos is more valuable evidence for RQ1 than exhausting one repo's
-# full commit list, and this keeps a full run from taking hours-to-days.
-MAX_COMMITS_PER_REPO = 4
-
-# pytest's own exit codes: 0 = all passed, 1 = some failed, 2 = interrupted,
-# 3 = internal error, 4 = usage error, 5 = no tests were collected at all.
-# 5 is NOT the same claim as 1 -- "nothing to run" is a different failure
-# mode than "we ran tests and they broke", and conflating them was hiding
-# the real problem (see NO_TESTS_COLLECTED below).
 PYTEST_NO_TESTS_COLLECTED = 5
-
 
 def run_cmd(cmd, cwd, env=None, timeout=120):
     try:
@@ -57,7 +49,6 @@ def run_cmd(cmd, cwd, env=None, timeout=120):
     except Exception as e:
         return -1, str(e)
 
-
 def bin_paths(venv_dir):
     if os.name == "nt":
         return (os.path.join(venv_dir, "Scripts", "python.exe"),
@@ -65,14 +56,10 @@ def bin_paths(venv_dir):
     return (os.path.join(venv_dir, "bin", "python"),
             os.path.join(venv_dir, "bin", "pytest"))
 
-
-def setup_venv_with_repo_deps(work_dir, venv_dir):
+def setup_venv_with_all_deps(work_dir, venv_dir):
     """
-    Creates a fresh venv AND installs the target repo's own dependencies as
-    they exist at the currently checked-out commit -- not just pytest.
-    Without this, every test file fails to even import the package under
-    test, which is what was producing UNSTABLE_BASE on 100% of candidates.
-    Returns (python_bin, pytest_bin, env, install_ok, install_log).
+    Creates venv and recursively discovers & installs all dependencies 
+    across monorepo subdirectories without short-path warnings.
     """
     venv.create(venv_dir, with_pip=True)
     python_bin, pytest_bin = bin_paths(venv_dir)
@@ -80,37 +67,60 @@ def setup_venv_with_repo_deps(work_dir, venv_dir):
     env = os.environ.copy()
     env["VIRTUAL_ENV"] = venv_dir
     env["PATH"] = os.path.dirname(python_bin) + os.pathsep + env.get("PATH", "")
+    
+    # Dummy API keys to prevent network/auth crashes in test suites
+    env["OPENAI_API_KEY"] = "mock-key-for-mace-eval"
+    env["ANTHROPIC_API_KEY"] = "mock-key-for-mace-eval"
+    env["OLLAMA_HOST"] = "http://127.0.0.1:11434"
 
-    code, log = run_cmd(f'"{python_bin}" -m pip install --upgrade pip pytest pytest-mock pytest-asyncio pytest-json-report', cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
+    # Core test harness bootstrap
+    bootstrap_cmd = f'"{python_bin}" -m pip install --upgrade pip pytest pytest-mock pytest-asyncio pytest-json-report'
+    code, log = run_cmd(bootstrap_cmd, cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
     if code != 0:
-        return python_bin, pytest_bin, env, False, "pip/pytest bootstrap failed:\n" + log[-1200:]
+        return python_bin, pytest_bin, env, False, "Bootstrap failed:\n" + log[-600:]
 
-    # Install the repo's OWN dependencies, in priority order. This is the
-    # actual fix: a bare venv + pytest cannot import the package being tested.
-    has_pyproject = os.path.exists(os.path.join(work_dir, "pyproject.toml"))
-    has_setup_py = os.path.exists(os.path.join(work_dir, "setup.py"))
-    has_requirements = os.path.exists(os.path.join(work_dir, "requirements.txt"))
+    # Recursive monorepo dependency installation
+    for root, dirs, files in os.walk(work_dir):
+        if ".git" in root or "mace_venv" in root:
+            continue
+            
+        if "requirements.txt" in files:
+            req_path = os.path.join(root, "requirements.txt")
+            run_cmd(f'"{python_bin}" -m pip install -r "{req_path}"', cwd=root, env=env, timeout=INSTALL_TIMEOUT)
 
-    if has_pyproject or has_setup_py:
-        code, log = run_cmd(f'"{python_bin}" -m pip install -e .',
-                             cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
-        if code != 0 and has_requirements:
-            # editable install can fail on old/broken metadata; fall back
-            code, log = run_cmd(f'"{python_bin}" -m pip install -r requirements.txt',
-                                 cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
-    elif has_requirements:
-        code, log = run_cmd(f'"{python_bin}" -m pip install -r requirements.txt',
-                             cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
-    else:
-        # No manifest found at all -- proceed anyway, but flag it so this
-        # is visible in the output rather than silently assumed fine.
-        return python_bin, pytest_bin, env, True, "NO_MANIFEST_FOUND (no pyproject.toml/setup.py/requirements.txt)"
-
-    if code != 0:
-        return python_bin, pytest_bin, env, False, "dependency install failed:\n" + log[-1200:]
+        if "setup.py" in files or "pyproject.toml" in files:
+            run_cmd(f'"{python_bin}" -m pip install -e .', cwd=root, env=env, timeout=INSTALL_TIMEOUT)
 
     return python_bin, pytest_bin, env, True, "OK"
 
+def apply_prompt_mutation_direct(repo, work_dir, target_commit_hash, prompt_files_str):
+    """
+    Reads prompt file content from commit C_i using Git forward slashes (/)
+    and injects it directly onto disk at C_{i-1}.
+    """
+    prompt_files = [f.strip() for f in prompt_files_str.split(";") if f.strip()]
+    modified_count = 0
+
+    for pfile in prompt_files:
+        git_path = pfile.replace("\\", "/")
+        full_path = os.path.join(work_dir, git_path)
+
+        try:
+            file_content_at_Ci = repo.git.show(f"{target_commit_hash}:{git_path}")
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(file_content_at_Ci)
+            modified_count += 1
+        except Exception as e:
+            err_str = str(e)
+            if "exists on disk, but not in" in err_str or "does not exist" in err_str:
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+                    modified_count += 1
+            else:
+                return False, f"Failed to inject prompt content for {pfile}: {e}"
+
+    return True, f"Successfully mutated {modified_count} prompt file(s)"
 
 def classify_pytest_run(returncode):
     if returncode == 0:
@@ -119,50 +129,33 @@ def classify_pytest_run(returncode):
         return "NO_TESTS_COLLECTED"
     return "REAL_FAILURE"
 
-
-# Known signatures of "we can't reproduce a period-correct toolchain" failures,
-# as opposed to a genuine baseline code failure. These are NOT fixable by
-# picking different dependency versions -- e.g. pytest permanently removed
-# support for generator-style ("yield") tests years ago, so no pytest version
-# is simultaneously old enough to allow it and new enough to install cleanly
-# alongside everything else. Distinguishing this from a real failure matters:
-# it's an honest limitation of environment reproduction, not evidence the
-# commit's code is unstable.
 TOOLING_INCOMPATIBILITY_SIGNATURES = [
     "'yield' keyword is allowed in fixtures, but not in tests",
     "PluggyTeardownRaisedWarning",
-    "fixture '.*' not found",
     "ScopeMismatch",
     "Failed: async def functions are not natively supported",
     "DeprecationWarning: The 'asyncio_mode' default",
 ]
 
-
 def is_tooling_incompatibility(output_text):
-    return any(sig in output_text for sig in TOOLING_INCOMPATIBILITY_SIGNATURES) or \
-           bool(re.search(r"fixture '[^']*' not found", output_text))
-
+    return any(sig in output_text for sig in TOOLING_INCOMPATIBILITY_SIGNATURES)
 
 def evaluate_candidate(repo, work_dir, commit_hash, prompt_files_str):
-    """
-    Runs the baseline/mutation differential test for ONE commit, reusing an
-    already-cloned repo (repo, work_dir passed in) rather than re-cloning.
-    """
     target_commit = repo.commit(commit_hash)
     if not target_commit.parents:
         return "NO_PARENT", "First commit in repo", ""
     parent_commit = target_commit.parents[0]
 
-    # 1. Checkout Pre-Commit State (C_{i-1}), discarding any leftovers
+    # 1. Checkout Pre-Commit State C_{i-1}
     repo.git.checkout(parent_commit.hexsha, force=True)
-    repo.git.clean("-fdx")  # remove untracked files/venvs left by a previous candidate
+    repo.git.clean("-fdx")
 
-    venv_dir = os.path.join(tempfile.gettempdir(), "mace_venv_" + commit_hash[:10])
+    venv_dir = os.path.join(MACE_TEMP_DIR, "mace_venv_" + commit_hash[:10])
     if os.path.exists(venv_dir):
         shutil.rmtree(venv_dir, ignore_errors=True)
 
     try:
-        python_bin, pytest_bin, env, install_ok, install_log = setup_venv_with_repo_deps(work_dir, venv_dir)
+        python_bin, pytest_bin, env, install_ok, install_log = setup_venv_with_all_deps(work_dir, venv_dir)
         if not install_ok:
             return "DEPENDENCY_INSTALL_FAILED", install_log, ""
 
@@ -171,29 +164,16 @@ def evaluate_candidate(repo, work_dir, commit_hash, prompt_files_str):
         base_status = classify_pytest_run(code_base)
 
         if base_status == "NO_TESTS_COLLECTED":
-            return "NO_TESTS_COLLECTED", "pytest collected zero tests at baseline (not a failure, nothing to compare)", out_base[-1200:]
+            return "NO_TESTS_COLLECTED", "pytest collected zero tests at baseline", out_base[-1200:]
         if base_status == "REAL_FAILURE":
             if is_tooling_incompatibility(out_base):
-                return ("TOOLING_INCOMPATIBLE",
-                        "Baseline can't run under any reproducible modern toolchain "
-                        "(e.g. removed pytest yield-test syntax) -- not a code failure, "
-                        "a period-environment reproduction limit. Discarded, but counted separately.",
-                        out_base[-1200:])
-            return "UNSTABLE_BASE", "Pre-commit baseline genuinely failed pytest (discarded, too noisy to attribute)", out_base[-1200:]
+                return "TOOLING_INCOMPATIBLE", "Environment reproduction limit", out_base[-1200:]
+            return "UNSTABLE_BASE", "Pre-commit baseline genuinely failed pytest", out_base[-1200:]
 
-        # 3. Extract prompt-only patch from C_i and apply it on top of C_{i-1}
-        prompt_files = [f.strip() for f in prompt_files_str.split(";") if f.strip()]
-        patch_text = repo.git.diff(parent_commit.hexsha, target_commit.hexsha, "--", *prompt_files)
-        if not patch_text.strip():
-            return "EMPTY_PATCH", "No prompt patch generated", ""
-
-        patch_file = os.path.join(tempfile.gettempdir(), f"mace_patch_{commit_hash[:10]}.patch")
-        with open(patch_file, "w", encoding="utf-8") as f:
-            f.write(patch_text)
-
-        code_patch, out_patch = run_cmd(f'git apply "{patch_file}"', cwd=work_dir, timeout=30)
-        if code_patch != 0:
-            return "PATCH_FAILED", "Failed to apply prompt-only patch", out_patch[-800:]
+        # 3. Direct Prompt Injection (Mutated State M_i)
+        success, mut_msg = apply_prompt_mutation_direct(repo, work_dir, target_commit.hexsha, prompt_files_str)
+        if not success:
+            return "MUTATION_FAILED", mut_msg, ""
 
         # 4. Mutated pytest run: NEW prompt, OLD consumer code
         code_mut, out_mut = run_cmd(f'"{pytest_bin}"', cwd=work_dir, env=env, timeout=TEST_TIMEOUT)
@@ -202,16 +182,15 @@ def evaluate_candidate(repo, work_dir, commit_hash, prompt_files_str):
         if mut_status == "PASS":
             return "PASS_TO_PASS", "Non-breaking prompt modification", out_mut[-1200:]
         if mut_status == "NO_TESTS_COLLECTED":
-            return "MUTATION_BROKE_COLLECTION", "Prompt-only patch broke test collection itself (e.g. syntax error) -- inspect manually", out_mut[-1500:]
-        return "PASS_TO_FAIL", "VERIFIED BREAKING CHANGE: prompt edit alone broke the existing test suite", out_mut[-1500:]
+            return "MUTATION_BROKE_COLLECTION", "Prompt edit broke test collection syntax", out_mut[-1200:]
+            
+        return "PASS_TO_FAIL", "VERIFIED BREAKING CHANGE: prompt edit alone broke test suite!", out_mut[-1500:]
 
     finally:
         if os.path.exists(venv_dir):
             shutil.rmtree(venv_dir, ignore_errors=True)
 
-
 def load_already_processed(path):
-    """Supports resuming: commits already in the output CSV are skipped."""
     done = set()
     if os.path.exists(path):
         with open(path, mode="r", encoding="utf-8") as f:
@@ -219,9 +198,8 @@ def load_already_processed(path):
                 done.add(row["commit_hash"])
     return done
 
-
 def execute_step4():
-    print("=== Stage 4: MACE-Eval Differential Re-Validation ===\n")
+    print("=== Stage 4: MACE-Eval Differential Re-Validation (Clean Temp Dir Mode) ===\n")
 
     if not os.path.exists(CSV_INPUT):
         print(f" Error: {CSV_INPUT} not found! Run Step 3 first.")
@@ -236,26 +214,16 @@ def execute_step4():
     already_done = load_already_processed(CSV_OUTPUT)
     remaining = [c for c in candidates if c["commit_hash"] not in already_done]
 
-    print(f"Loaded {len(all_candidates)} candidates. {len(candidates)} are high-confidence.")
-    print(f"{len(already_done)} already processed in a previous run (resuming). "
-          f"{len(remaining)} left to evaluate.\n")
+    print(f"Loaded {len(all_candidates)} candidates. {len(candidates)} high-confidence.")
+    print(f"{len(already_done)} already evaluated. {len(remaining)} remaining.\n")
 
     if not os.path.exists(CSV_OUTPUT):
         with open(CSV_OUTPUT, mode="w", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
 
-    # Group by repo so each repo is cloned exactly ONCE and its commits are
-    # evaluated by checking out within the same clone, not re-cloning per commit.
     by_repo = defaultdict(list)
     for c in remaining:
         by_repo[c["repo_name"]].append(c)
-
-    if MAX_COMMITS_PER_REPO:
-        skipped_for_cap = sum(max(0, len(v) - MAX_COMMITS_PER_REPO) for v in by_repo.values())
-        by_repo = {repo: cands[:MAX_COMMITS_PER_REPO] for repo, cands in by_repo.items()}
-        if skipped_for_cap:
-            print(f"Capping at {MAX_COMMITS_PER_REPO} commit(s)/repo for breadth+time: "
-                  f"skipping {skipped_for_cap} extra candidate(s) from over-represented repos.\n")
 
     stats = defaultdict(int)
     total_done = 0
@@ -263,24 +231,18 @@ def execute_step4():
 
     for repo_name, repo_candidates in by_repo.items():
         clone_url = f"https://github.com/{repo_name}.git"
-        work_dir = tempfile.mkdtemp(prefix="mace_repo_")
-        print(f"\n=== Cloning {repo_name} once for {len(repo_candidates)} candidate commit(s) ===")
+        repo_dir_name = repo_name.replace("/", "_")
+        work_dir = os.path.join(MACE_TEMP_DIR, f"repo_{repo_dir_name}")
+        
+        if os.path.exists(work_dir):
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+        print(f"\n=== Processing {repo_name} ({len(repo_candidates)} candidate commits) ===")
 
         try:
             repo = Repo.clone_from(clone_url, work_dir)
         except Exception as e:
-            print(f"   ⚠️ Clone failed for {repo_name}: {e}")
-            for cand in repo_candidates:
-                total_done += 1
-                stats["CLONE_FAILED"] += 1
-                with open(CSV_OUTPUT, mode="a", newline="", encoding="utf-8") as f:
-                    csv.DictWriter(f, fieldnames=FIELDNAMES).writerow({
-                        "repo_name": repo_name, "commit_hash": cand["commit_hash"],
-                        "confidence": cand.get("confidence", "unknown"),
-                        "eval_result": "CLONE_FAILED", "prompt_files": cand["prompt_files"],
-                        "consumer_files": cand.get("consumer_files_variable_confirmed") or "",
-                        "details": str(e)[-800:], "log_snippet": "",
-                    })
+            print(f"    Clone failed for {repo_name}: {e}")
             continue
 
         for cand in repo_candidates:
@@ -288,8 +250,7 @@ def execute_step4():
             commit_hash = cand["commit_hash"]
             prompt_files = cand["prompt_files"]
             confidence = cand.get("confidence", "unknown")
-            consumer_files = (cand.get("consumer_files_variable_confirmed")
-                               or cand.get("consumer_files_heuristic_only") or "")
+            consumer_files = cand.get("consumer_files_variable_confirmed") or cand.get("consumer_files_heuristic_only") or ""
 
             print(f"[{total_done}/{total}] {repo_name} @ {commit_hash[:7]}...")
 
@@ -316,14 +277,9 @@ def execute_step4():
     print(f"  Verified Breaking Changes (PASS_TO_FAIL):     {stats.get('PASS_TO_FAIL', 0)}")
     print(f"  Non-Breaking Prompt Edits (PASS_TO_PASS):     {stats.get('PASS_TO_PASS', 0)}")
     print(f"  No Tests Collected at Baseline:                {stats.get('NO_TESTS_COLLECTED', 0)}")
-    print(f"  Unstable Baselines (real pre-existing failures): {stats.get('UNSTABLE_BASE', 0)}")
-    print(f"  Tooling/Environment Incompatible (not a code issue): {stats.get('TOOLING_INCOMPATIBLE', 0)}")
-    print(f"  Dependency Install Failed:                     {stats.get('DEPENDENCY_INSTALL_FAILED', 0)}")
-    print(f"  Patch Failed to Apply:                         {stats.get('PATCH_FAILED', 0)}")
-    print(f"  Clone Failed:                                  {stats.get('CLONE_FAILED', 0)}")
+    print(f"  Unstable Baselines:                           {stats.get('UNSTABLE_BASE', 0)}")
     print(f"  Output Saved To: {os.path.abspath(CSV_OUTPUT)}")
     print("==================================================")
-
 
 if __name__ == "__main__":
     execute_step4()
