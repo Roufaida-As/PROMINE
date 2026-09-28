@@ -149,6 +149,7 @@ def evaluate_candidate(repo, work_dir, commit_hash, prompt_files_str):
     # 1. Checkout Pre-Commit State C_{i-1}
     repo.git.checkout(parent_commit.hexsha, force=True)
     repo.git.clean("-fdx")
+    sanitize_pyproject_toml(work_dir)
 
     venv_dir = os.path.join(MACE_TEMP_DIR, "mace_venv_" + commit_hash[:10])
     if os.path.exists(venv_dir):
@@ -197,6 +198,27 @@ def load_already_processed(path):
             for row in csv.DictReader(f):
                 done.add(row["commit_hash"])
     return done
+
+def sanitize_pyproject_toml(work_dir):
+    """
+    Fixes the Pytest configuration collision ([tool.pytest] vs [tool.pytest.ini_options])
+    in pyproject.toml files on the fly so baseline tests can run cleanly.
+    """
+    for root, _, files in os.walk(work_dir):
+        if "pyproject.toml" in files:
+            p_path = os.path.join(root, "pyproject.toml")
+            try:
+                with open(p_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if "[tool.pytest]" in content and "[tool.pytest.ini_options]" in content:
+                    # Comment out the legacy/duplicate [tool.pytest] header
+                    new_content = content.replace("[tool.pytest]", "# [tool.pytest]")
+                    with open(p_path, "w", encoding="utf-8") as f:
+                        f.write(new_content)
+            except Exception:
+                pass
+            
+            
 
 def execute_step4():
     print("=== Stage 4: MACE-Eval Differential Re-Validation (Clean Temp Dir Mode) ===\n")
