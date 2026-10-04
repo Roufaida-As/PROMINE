@@ -1,0 +1,68 @@
+{
+  "source": "target_repos.csv",
+  "qualified_rows": 58,
+  "unique_repositories": 57,
+  "duplicate_rows": 1,
+  "categories": {
+    "instructor": 2,
+    "guardrails-ai": 16,
+    "langchain": 15,
+    "pydantic-ai": 25
+  },
+  "app_types": {
+    "SDK / library": 15,
+    "Agent / RAG application": 20,
+    "Other Python project": 10,
+    "Service / platform": 2,
+    "Template / starter": 11
+  },
+  "manifest_types": {
+    "pyproject.toml": 80,
+    "requirements.txt": 22,
+    "setup.py": 6
+  },
+  "stars": {
+    "min": 5,
+    "median": 143,
+    "max": 4486
+  },
+  "excluded": [
+    {
+      "category": "guardrails-ai",
+      "repo_name": "BerriAI/litellm",
+      "manifests": "cookbook/anthropic_agent_sdk/requirements.txt; cookbook/litellm-ollama-docker-image/requirements.txt; cookbook/livekit_agent_sdk/requirements.txt"
+    },
+    {
+      "category": "guardrails-ai",
+      "repo_name": "data-privacy-stack/presidio",
+      "manifests": "docs/samples/deployments/openai-anonymaztion-and-deanonymaztion-best-practices/src/api/requirements.txt; docs/samples/deployments/openai-anonymaztion-and-deanonymaztion-best-practices/src/client_app/requirements.txt; docs/samples/deployments/redacting-telemetry/app/requirements.txt"
+    },
+    {
+      "category": "pydantic-ai",
+      "repo_name": "pydantic/pydantic-ai",
+      "manifests": "clai/pyproject.toml; examples/pyproject.toml; pydantic_ai_slim/pyproject.toml"
+    },
+    {
+      "category": "guardrails-ai",
+      "repo_name": "guardrails-ai/guardrails",
+      "manifests": "pyproject.toml; server_ci/requirements.txt"
+    },
+    {
+      "category": "guardrails-ai",
+      "repo_name": "NVIDIA-NeMo/Guardrails",
+      "manifests": "examples/deployment/gliner_server/pyproject.toml; nemoguardrails/library/factchecking/align_score/requirements.txt; nemoguardrails/library/jailbreak_detection/requirements.txt"
+    },
+    {
+      "category": "guardrails-ai",
+      "repo_name": "IBM/mcp-context-forge",
+      "manifests": "docs/requirements.txt; mcp-servers/python/data_analysis_server/pyproject.toml; mcp-servers/python/data_analysis_server/requirements.txt"
+    },
+    {
+      "category": "guardrails-ai",
+      "repo_name": "future-agi/future-agi",
+      "manifests": "futureagi/agentic_eval/setup.py; futureagi/ee/requirements.txt; futureagi/model_serving/pyproject.toml"
+    }
+  ],
+  "exclusion_reason": "Manual exclusion because repository scale and nested manifests made the scan/install process too expensive and blocked the local machine.",
+  "classification_note": "App types are heuristic labels derived from repository names and manifest paths; they require manual validation."
+}

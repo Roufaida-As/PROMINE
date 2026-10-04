@@ -58,8 +58,8 @@ def bin_paths(venv_dir):
 
 def setup_venv_with_all_deps(work_dir, venv_dir):
     """
-    Creates venv and recursively discovers & installs all dependencies 
-    across monorepo subdirectories without short-path warnings.
+    Creates venv, sets up monorepo PYTHONPATHs, and installs packages 
+    including optional extras ([all,dev,test]).
     """
     venv.create(venv_dir, with_pip=True)
     python_bin, pytest_bin = bin_paths(venv_dir)
@@ -73,13 +73,25 @@ def setup_venv_with_all_deps(work_dir, venv_dir):
     env["ANTHROPIC_API_KEY"] = "mock-key-for-mace-eval"
     env["OLLAMA_HOST"] = "http://127.0.0.1:11434"
 
+    # Monorepo PYTHONPATH Auto-Discovery: Add root, src/, and packages/*/src/
+    pythonpath_dirs = [work_dir, os.path.join(work_dir, "src")]
+    packages_dir = os.path.join(work_dir, "packages")
+    if os.path.exists(packages_dir):
+        for pkg in os.listdir(packages_dir):
+            pkg_src = os.path.join(packages_dir, pkg, "src")
+            if os.path.exists(pkg_src):
+                pythonpath_dirs.append(pkg_src)
+
+    existing_ppath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs) + (os.pathsep + existing_ppath if existing_ppath else "")
+
     # Core test harness bootstrap
     bootstrap_cmd = f'"{python_bin}" -m pip install --upgrade pip pytest pytest-mock pytest-asyncio pytest-json-report'
     code, log = run_cmd(bootstrap_cmd, cwd=work_dir, env=env, timeout=INSTALL_TIMEOUT)
     if code != 0:
         return python_bin, pytest_bin, env, False, "Bootstrap failed:\n" + log[-600:]
 
-    # Recursive monorepo dependency installation
+    # Recursive monorepo dependency installation with optional extras
     for root, dirs, files in os.walk(work_dir):
         if ".git" in root or "mace_venv" in root:
             continue
@@ -89,7 +101,11 @@ def setup_venv_with_all_deps(work_dir, venv_dir):
             run_cmd(f'"{python_bin}" -m pip install -r "{req_path}"', cwd=root, env=env, timeout=INSTALL_TIMEOUT)
 
         if "setup.py" in files or "pyproject.toml" in files:
-            run_cmd(f'"{python_bin}" -m pip install -e .', cwd=root, env=env, timeout=INSTALL_TIMEOUT)
+            # Try installing with extras first, fall back to basic editable install
+            cmd_extras = f'"{python_bin}" -m pip install -e .[all,dev,test]'
+            code_ex, _ = run_cmd(cmd_extras, cwd=root, env=env, timeout=INSTALL_TIMEOUT)
+            if code_ex != 0:
+                run_cmd(f'"{python_bin}" -m pip install -e .', cwd=root, env=env, timeout=INSTALL_TIMEOUT)
 
     return python_bin, pytest_bin, env, True, "OK"
 
@@ -147,8 +163,11 @@ def evaluate_candidate(repo, work_dir, commit_hash, prompt_files_str):
     parent_commit = target_commit.parents[0]
 
     # 1. Checkout Pre-Commit State C_{i-1}
-    repo.git.checkout(parent_commit.hexsha, force=True)
-    repo.git.clean("-fdx")
+    try:
+      repo.git.checkout(parent_commit.hexsha, force=True)
+      repo.git.clean("-fdx")
+    except Exception as e:
+      return "CHECKOUT_FAILED", f"Git checkout failed (e.g., invalid Windows path): {e}", ""
     sanitize_pyproject_toml(work_dir)
 
     venv_dir = os.path.join(MACE_TEMP_DIR, "mace_venv_" + commit_hash[:10])
@@ -160,8 +179,11 @@ def evaluate_candidate(repo, work_dir, commit_hash, prompt_files_str):
         if not install_ok:
             return "DEPENDENCY_INSTALL_FAILED", install_log, ""
 
+        # Pass flags to skip live integration/server tests and avoid vector DB locks
+        pytest_flags = '-m "not integration and not e2e" -k "not test_vector_store and not test_chroma and not test_qdrant"'
         # 2. Baseline pytest on C_{i-1}
-        code_base, out_base = run_cmd(f'"{pytest_bin}"', cwd=work_dir, env=env, timeout=TEST_TIMEOUT)
+
+        code_base, out_base = run_cmd(f'"{pytest_bin}" {pytest_flags}', cwd=work_dir, env=env, timeout=TEST_TIMEOUT)
         base_status = classify_pytest_run(code_base)
 
         if base_status == "NO_TESTS_COLLECTED":
@@ -219,7 +241,18 @@ def sanitize_pyproject_toml(work_dir):
                 pass
             
             
+import stat
 
+def remove_readonly(func, path, exc_info):
+    """Removes read-only flag on Windows files so shutil.rmtree can delete them."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+def safe_rmtree(path):
+    """Safely deletes a directory tree, overcoming Windows read-only file locks."""
+    if os.path.exists(path):
+        shutil.rmtree(path, onerror=remove_readonly)
+        
 def execute_step4():
     print("=== Stage 4: MACE-Eval Differential Re-Validation (Clean Temp Dir Mode) ===\n")
 
@@ -255,17 +288,32 @@ def execute_step4():
         clone_url = f"https://github.com/{repo_name}.git"
         repo_dir_name = repo_name.replace("/", "_")
         work_dir = os.path.join(MACE_TEMP_DIR, f"repo_{repo_dir_name}")
-        
-        if os.path.exists(work_dir):
-            shutil.rmtree(work_dir, ignore_errors=True)
 
         print(f"\n=== Processing {repo_name} ({len(repo_candidates)} candidate commits) ===")
 
-        try:
-            repo = Repo.clone_from(clone_url, work_dir)
-        except Exception as e:
-            print(f"    Clone failed for {repo_name}: {e}")
-            continue
+        # Reuse existing clone if present, otherwise clone fresh
+        repo = None
+        git_folder = os.path.join(work_dir, ".git")
+        
+        if os.path.exists(git_folder):
+            try:
+                repo = Repo(work_dir)
+                repo.git.reset("--hard")
+                repo.git.clean("-fdx")
+                print(f"   [OK] Reusing existing repository clone on disk.")
+            except Exception as e:
+                print(f"   Existing clone invalid ({e}), performing clean re-clone...")
+                safe_rmtree(work_dir)
+                repo = None
+
+        if repo is None:
+            try:
+                if os.path.exists(work_dir):
+                    safe_rmtree(work_dir)
+                repo = Repo.clone_from(clone_url, work_dir)
+            except Exception as e:
+                print(f"   Clone failed for {repo_name}: {e}")
+                continue
 
         for cand in repo_candidates:
             total_done += 1
@@ -291,8 +339,6 @@ def execute_step4():
                     "details": msg, "log_snippet": log_snippet,
                 })
             print(f"   -> [{result}] {msg}")
-
-        shutil.rmtree(work_dir, ignore_errors=True)
 
     print("\n==================================================")
     print("  Stage 4 Evaluation Complete!")

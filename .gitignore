@@ -2,3 +2,6 @@
 __pycache__/
 *.csv
 *.txt
+step1_pngs
+step2_pngs
+step3_pngs
