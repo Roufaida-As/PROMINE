@@ -29,6 +29,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
+import warnings
 from collections import Counter
 
 import pandas as pd
@@ -43,6 +45,13 @@ try:
     import yaml
 except ImportError:
     yaml = None
+
+warnings.filterwarnings("ignore")           # SyntaxWarnings from the mined repos' own code
+try:                                       # Windows consoles (cp1252) crash on non-ASCII prompts
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 COMMITS_CSV = "prompt_commits.csv"
 REPOS_CSV = "target_repos.csv"
@@ -81,7 +90,7 @@ def git_show(repo_dir, rev, path):
 
 def clone(url, dest):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    p = subprocess.run(["git", "clone", "--no-checkout", "--quiet", url, dest],
+    p = subprocess.run(["git", "clone", "--no-checkout", "--quiet", "--no-tags", "--shallow-since=2023-12-31", url, dest],
                        capture_output=True, timeout=3600, env=env)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.decode(errors="replace")[:300])
@@ -442,7 +451,15 @@ def main():
         tmp = tempfile.mkdtemp()
         try:
             clone(urls[repo], tmp)
-            buf = [rec for _, row in sub.iterrows() for rec in process_commit(tmp, row)]
+            buf = []
+            for _, row in sub.iterrows():            # one bad commit must not kill the repo
+                try:
+                    buf.extend(process_commit(tmp, row))
+                except Exception as e:                # incl. RecursionError / MemoryError
+                    buf.append({"repo_name": repo, "commit_hash": row["commit_hash"],
+                                "unit_id": uid(row["commit_hash"], "error"), "file": None, "key": None,
+                                "change_type": "skipped",
+                                "reason": f"error:{type(e).__name__}:{str(e)[:80]}"})
             if a.max_per_repo:
                 el = sorted((r for r in buf if r.get("stage_c_eligible")), key=lambda r: r["unit_id"])
                 for r in el[a.max_per_repo:]:

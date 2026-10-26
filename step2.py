@@ -7,7 +7,18 @@ import json
 import tempfile
 import shutil
 from datetime import datetime
-from pydriller import Repository
+import argparse
+import subprocess
+import time
+import warnings
+from collections import Counter
+from pydriller import Repository, ModificationType
+
+warnings.filterwarnings("ignore")
+try:   # Windows consoles (cp1252) crash on non-ASCII output
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 def set_max_csv_field_limit():
@@ -25,7 +36,18 @@ set_max_csv_field_limit()
 CSV_INPUT = "target_repos.csv"
 CSV_OUTPUT = "prompt_commits.csv"
 CHECKPOINT_OUTPUT = "step2_checkpoint.json"
-RESET_FLAG = "--reset"
+STATS_OUTPUT = "step2_repo_stats.csv"     # per-repo funnel numbers (for the paper)
+MAX_FILES_PER_COMMIT = 30                 # bulk commits are skipped (same limit as step2b)
+MAX_FILE_CHARS = 2_000_000
+MAX_CONSUMER_FILES = 30                   # cap what we store in consumer_candidate_diffs
+MAX_DIFF_CHARS = 20000
+MAX_GATE_CHARS = 500_000                  # skip AST gate on giant files (one repo took 1h because of them)
+CODE_EXTS = (".py", ".prompt", ".rail", ".yaml", ".yml", ".json")
+FAILED_FILE = "step2_failed.json"         # repo -> number of failed attempts
+MAX_ATTEMPTS = 3
+NET_ERRORS = ("Could not resolve host", "Failed to connect", "RPC failed", "early EOF",
+              "Connection", "timed out", "unexpected disconnect")
+BOT_AUTHOR = re.compile(r"(?i)(\[bot\]|dependabot|renovate|github-actions)")
 PROMPT_CONFIG_EXTENSIONS = {".json", ".yaml", ".yml"}
 
 # Temporal threshold: LLM structured prompt era
@@ -217,170 +239,245 @@ def extract_prompt_var_names(mod):
 
 
 def load_resume_state():
-    completed_repositories = set()
-    existing_commit_keys = set()
-
+    """Checkpoint is the single source of truth for finished repos (a repo that crashed
+    half-way is NOT treated as complete); commit keys only prevent duplicate rows."""
+    completed, keys = set(), set()
     if os.path.exists(CSV_OUTPUT):
-        with open(CSV_OUTPUT, mode="r", encoding="utf-8", newline="") as f:
-            for record in csv.DictReader(f):
-                repo_name = record.get("repo_name", "")
-                commit_hash = record.get("commit_hash", "")
-                if repo_name:
-                    completed_repositories.add(repo_name)
-                if repo_name and commit_hash:
-                    existing_commit_keys.add((repo_name, commit_hash))
-
-    if os.path.exists(CHECKPOINT_OUTPUT) and os.path.exists(CSV_OUTPUT):
-        with open(CHECKPOINT_OUTPUT, mode="r", encoding="utf-8") as f:
-            checkpoint = json.load(f)
-        completed_repositories = set(checkpoint.get("completed_repositories", []))
-
-    return completed_repositories, existing_commit_keys
+        with open(CSV_OUTPUT, encoding="utf-8", newline="") as f:
+            for rec in csv.DictReader(f):
+                if rec.get("repo_name") and rec.get("commit_hash"):
+                    keys.add((rec["repo_name"], rec["commit_hash"]))
+    if os.path.exists(CHECKPOINT_OUTPUT):
+        with open(CHECKPOINT_OUTPUT, encoding="utf-8") as f:
+            completed = set(json.load(f).get("completed_repositories", []))
+    return completed, keys
 
 
-def save_resume_state(completed_repositories):
-    temporary_checkpoint = f"{CHECKPOINT_OUTPUT}.tmp"
-    with open(temporary_checkpoint, mode="w", encoding="utf-8") as f:
-        json.dump(
-            {"completed_repositories": sorted(completed_repositories)},
-            f,
-            indent=2,
-        )
-    os.replace(temporary_checkpoint, CHECKPOINT_OUTPUT)
+def save_resume_state(completed):
+    tmp = f"{CHECKPOINT_OUTPUT}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"completed_repositories": sorted(completed)}, f, indent=2)
+    os.replace(tmp, CHECKPOINT_OUTPUT)
 
 
 def reset_output_state():
-    for path in (CSV_OUTPUT, CHECKPOINT_OUTPUT):
+    for path in (CSV_OUTPUT, CHECKPOINT_OUTPUT, STATS_OUTPUT):
         if os.path.exists(path):
             os.remove(path)
 
 
+def shallow_clone(url, dest, timeout=3600):
+    """History since 2024 only, NO working-tree checkout (avoids Windows long-path / invalid-filename
+    failures; PyDriller reads git objects). Retries network errors. False = no commits in window."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    for attempt in range(3):
+        p = subprocess.run(["git", "clone", "--quiet", "--no-checkout", "--no-tags",
+                            "--shallow-since=2023-12-31", url, dest],
+                           capture_output=True, timeout=timeout, env=env)
+        if p.returncode == 0:
+            return True
+        err = p.stderr.decode(errors="replace")
+        if "no commits selected" in err:
+            return False
+        if attempt < 2 and any(k in err for k in NET_ERRORS):
+            print(f"   network error, retrying in {30 * (attempt + 1)}s...")
+            shutil.rmtree(dest, ignore_errors=True)
+            os.makedirs(dest, exist_ok=True)
+            time.sleep(30 * (attempt + 1))
+            continue
+        raise RuntimeError(err[:300])
+
+
+def confirm_real_edit(mod, path):
+    """Strict second stage. Returns (ok, reason). Uses the SAME extraction as step2b, so a commit
+    only qualifies if an existing prompt string really changed (not created/deleted/moved to
+    tests/examples, not whitespace-only, not just a python {expr} change)."""
+    import step2b as s2b                      # lazy import (step2b imports hints from this file)
+    if mod.change_type != ModificationType.MODIFY:
+        return False, "not_modify(add/delete/rename)"
+    if s2b._TEST.search(path) or s2b._EXAMPLE.search(path) or s2b._TOOLCFG.search(path):
+        return False, "test_example_or_toolconfig_path"
+    old, new = mod.source_code_before or "", mod.source_code or ""
+    if len(old) > MAX_FILE_CHARS or len(new) > MAX_FILE_CHARS:
+        return False, "file_too_big"
+    o, n = s2b.extract(old, path), s2b.extract(new, path)
+    if o is None or n is None:
+        return False, "unparsable_or_yaml_missing"
+    for ctype, _, _, a, b, mo, mn in s2b.pair_units(o, n):
+        if ctype != "modified":
+            continue
+        sig = s2b.signals(a, b, mo, mn)
+        if not (sig["surface_only"] or sig["reorder_only"] or sig["interp_only"]):
+            return True, "ok"
+    return False, "no_real_prompt_edit(added/removed/surface-only/short strings)"
+
+
+def append_stats(row):
+    new_file = not os.path.exists(STATS_OUTPUT)
+    with open(STATS_OUTPUT, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(row))
+        if new_file:
+            w.writeheader()
+        w.writerow(row)
+
+
 def execute_step2_precise():
-    print("=== Step 2: High-Precision Prompt Commit Scraping (All Repos) ===\n")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reset", action="store_true")
+    ap.add_argument("--max-commits", type=int, default=0, help="skip repos with more commits since 2024")
+    ap.add_argument("--limit", type=int, default=0, help="process only the first N pending repos")
+    ap.add_argument("--only-repo", help="process just this repo_name")
+    ap.add_argument("--retry-failed", action="store_true", help="also retry repos that failed 3 times")
+    ap.add_argument("--repo-timeout", type=int, default=90, help="minutes per repo (partial results kept)")
+    args = ap.parse_args()
 
-    if RESET_FLAG in sys.argv:
+    print("=== Step 2 (v2): High-Precision Prompt Commit Scraping ===\n")
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("WARNING: pyyaml missing -> .yaml/.yml prompts will be ignored (pip install pyyaml)\n")
+    if args.reset:
         reset_output_state()
-        print("Reset requested: rebuilding prompt_commits.csv from scratch.\n")
-
+        print("Reset requested: rebuilding from scratch.\n")
     if not os.path.exists(CSV_INPUT):
         print(f" Error: {CSV_INPUT} not found! Run Step 1 first.")
         return
 
-    with open(CSV_INPUT, mode="r", encoding="utf-8") as f:
+    with open(CSV_INPUT, encoding="utf-8") as f:
         repos = list(csv.DictReader(f))
 
-    fieldnames = [
-        "category", "repo_name", "commit_hash", "author_date", "msg",
-        "prompt_files", "prompt_var_names", "all_modified_files",
-        "consumer_candidate_diffs",  # NEW: JSON {filepath: diff_text} for non-prompt .py files
-    ]
-
-    completed_repositories, existing_commit_keys = load_resume_state()
-    if not os.path.exists(CSV_OUTPUT):
-        with open(CSV_OUTPUT, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-
-    if completed_repositories:
-        print(
-            f"Resuming: {len(completed_repositories)} repositories already completed.\n"
-        )
-
-    total_prompt_commits = len(existing_commit_keys)
-
-    for idx, repo in enumerate(repos, 1):
-        repo_name = repo["repo_name"]
-        clone_url = repo["clone_url"]
-        category = repo["category"]
-
-        if repo_name in completed_repositories:
-            print(f"[{idx}/{len(repos)}] Skipping completed: {repo_name}")
-            continue
-
-        print(f"[{idx}/{len(repos)}] Processing: {repo_name}...")
-        temp_repo_dir = tempfile.mkdtemp()
-
+    def size(r):
         try:
-            scanned = 0
-            found = 0
+            return int(float(r.get("commits_since_2024") or 10**9))
+        except ValueError:
+            return 10**9
+    repos.sort(key=size)                         # smallest repos first -> early results, giants last
+    if args.max_commits:
+        repos = [r for r in repos if size(r) <= args.max_commits]
+    if args.only_repo:
+        repos = [r for r in repos if r["repo_name"] == args.only_repo]
 
-            repo_miner = Repository(
-                clone_url,
-                clone_repo_to=temp_repo_dir,
-                since=START_DATE,
-                only_modifications_with_file_types=['.py', '.prompt', '.rail', '.yaml', '.yml', '.json']
-            )
+    fieldnames = ["category", "repo_name", "commit_hash", "author_date", "msg",
+                  "prompt_files", "prompt_var_names", "all_modified_files", "consumer_candidate_diffs"]
+    completed, existing_keys = load_resume_state()
+    if not os.path.exists(CSV_OUTPUT):
+        with open(CSV_OUTPUT, "w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=fieldnames).writeheader()
+    if completed:
+        print(f"Resuming: {len(completed)} repositories already completed.\n")
 
-            for commit in repo_miner.traverse_commits():
-                scanned += 1
-                if len(commit.parents) > 1:  # Skip merge commits
-                    continue
+    failures = json.load(open(FAILED_FILE)) if os.path.exists(FAILED_FILE) else {}
+    pending = [r for r in repos if r["repo_name"] not in completed]
+    gave_up = [r["repo_name"] for r in pending if failures.get(r["repo_name"], 0) >= MAX_ATTEMPTS]
+    if gave_up and not args.retry_failed:
+        print(f"Skipping {len(gave_up)} repos that failed {MAX_ATTEMPTS}x (use --retry-failed): {gave_up[:5]}...\n")
+        pending = [r for r in pending if r["repo_name"] not in gave_up]
+    pending.sort(key=lambda r: (failures.get(r["repo_name"], 0), size(r)))   # previously failed go last
+    if args.limit:
+        pending = pending[:args.limit]
+    total = len(existing_keys)
 
-                prompt_files = []
-                prompt_var_names = set()
-                all_modified_files = []
-                consumer_candidate_diffs = {}  # filepath -> diff text, non-prompt .py files only
-
-                for mod in commit.modified_files:
-                    path = mod.new_path or mod.old_path
-                    if not path:
+    for idx, repo in enumerate(pending, 1):
+        repo_name, category = repo["repo_name"], repo["category"]
+        print(f"[{idx}/{len(pending)}] {repo_name} (commits since 2024: {repo.get('commits_since_2024')})")
+        tmp_dir = tempfile.mkdtemp()
+        t0 = time.time()
+        scanned = gated = confirmed = 0
+        reasons, partial = Counter(), False
+        try:
+            if not shallow_clone(repo["clone_url"], tmp_dir):
+                print("   no commits in window")
+            else:
+                miner = Repository(path_to_repo=tmp_dir, since=START_DATE)
+                for commit in miner.traverse_commits():
+                    scanned += 1
+                    if time.time() - t0 > args.repo_timeout * 60:
+                        partial = True
+                        print(f"   !! time limit reached after {scanned} commits (partial)")
+                        break
+                    if len(commit.parents) > 1:                       # merge commits
+                        continue
+                    if commit.author and BOT_AUTHOR.search(commit.author.name or ""):
                         continue
 
-                    all_modified_files.append(path)
-                    is_python = path.lower().endswith(".py")
-                    if is_python:
-                        is_prompt, prompt_names_for_mod = analyze_prompt_modification(mod)
-                    else:
-                        is_prompt = touches_prompt_cross_verified(mod)
-                        prompt_names_for_mod = set()
-
-                    if is_prompt:
-                        prompt_files.append(path)
-                        prompt_var_names |= prompt_names_for_mod
-                    elif path.lower().endswith(".py"):
-                        # NEW: keep the diff of every co-changed Python file so Step 3
-                        # can grep it for the prompt variable name, the same way we
-                        # traced serper.ts by hand with `grep -rn "summarizeSearchSnippets"`.
-                        consumer_candidate_diffs[path] = mod.diff or ""
-
-                if prompt_files:
-                    commit_key = (repo_name, commit.hash)
-                    if commit_key in existing_commit_keys:
+                    prompt_files, var_names, all_files, consumers = [], set(), [], {}
+                    commit_gated = False
+                    try:                      # shallow-boundary commits have no parent -> git diff error
+                        mods = list(commit.modified_files)
+                    except Exception:
+                        reasons["commit_diff_error(shallow boundary)"] += 1
                         continue
+                    if not any((m.new_path or m.old_path or "").lower().endswith(CODE_EXTS) for m in mods):
+                        continue
+                    for mod in mods:
+                        path = mod.new_path or mod.old_path
+                        if not path:
+                            continue
+                        all_files.append(path)
+                        is_py = path.lower().endswith(".py")
+                        if is_py:
+                            if max(len(mod.source_code or ""), len(mod.source_code_before or "")) > MAX_GATE_CHARS:
+                                gate, names = False, set()
+                                reasons["gate_skipped_huge_file"] += 1
+                            else:
+                                gate, names = analyze_prompt_modification(mod)  # cheap loose gate
+                        else:
+                            gate, names = touches_prompt_cross_verified(mod), set()
+                        if gate:
+                            commit_gated = True
+                            ok, why = confirm_real_edit(mod, path)               # strict confirmation
+                            reasons[why] += 1
+                            if ok:
+                                prompt_files.append(path)
+                                var_names |= names
+                                continue
+                        if is_py and len(consumers) < MAX_CONSUMER_FILES:
+                            consumers[path] = (mod.diff or "")[:MAX_DIFF_CHARS]
+                    gated += commit_gated
 
-                    found += 1
-                    record = {
-                        "category": category,
-                        "repo_name": repo_name,
-                        "commit_hash": commit.hash,
+                    if not prompt_files:
+                        continue
+                    if len(prompt_files) > MAX_FILES_PER_COMMIT:
+                        reasons["bulk_commit"] += 1
+                        continue
+                    key = (repo_name, commit.hash)
+                    if key in existing_keys:
+                        continue
+                    confirmed += 1
+                    rec = {
+                        "category": category, "repo_name": repo_name, "commit_hash": commit.hash,
                         "author_date": commit.author_date.strftime("%Y-%m-%d %H:%M:%S"),
                         "msg": commit.msg.split("\n")[0][:120],
-                        "prompt_files": ";".join(set(prompt_files)),
-                        "prompt_var_names": ";".join(sorted(prompt_var_names)),
-                        "all_modified_files": ";".join(all_modified_files),
-                        "consumer_candidate_diffs": json.dumps(consumer_candidate_diffs),
+                        "prompt_files": ";".join(sorted(set(prompt_files))),
+                        "prompt_var_names": ";".join(sorted(var_names)),
+                        "all_modified_files": ";".join(all_files),
+                        "consumer_candidate_diffs": json.dumps(consumers),
                     }
-
-                    with open(CSV_OUTPUT, mode="a", newline="", encoding="utf-8") as f:
-                        writer = csv.DictWriter(f, fieldnames=fieldnames)
-                        writer.writerow(record)
-                    existing_commit_keys.add(commit_key)
-
-            total_prompt_commits += found
-            print(f"   ✓ Scanned {scanned} commits | Found {found} high-precision prompt commits")
-
+                    with open(CSV_OUTPUT, "a", newline="", encoding="utf-8") as f:
+                        csv.DictWriter(f, fieldnames=fieldnames).writerow(rec)
+                    existing_keys.add(key)
+            total += confirmed
+            print(f"   scanned {scanned} | loose-gate {gated} | CONFIRMED edits {confirmed} "
+                  f"| {int(time.time() - t0)}s")
         except Exception as e:
-            print(f"   ⚠️ Skipped {repo_name} (Error/Timeout): {e}")
+            failures[repo_name] = failures.get(repo_name, 0) + 1
+            json.dump(failures, open(FAILED_FILE, "w"))
+            print(f"   !! failed {repo_name} (attempt {failures[repo_name]}/{MAX_ATTEMPTS}): "
+                  f"{type(e).__name__}: {str(e)[:160]}")
         else:
-            completed_repositories.add(repo_name)
-            save_resume_state(completed_repositories)
-            print(f"   Checkpoint saved: {len(completed_repositories)}/{len(repos)} repositories")
+            completed.add(repo_name)
+            save_resume_state(completed)
+            append_stats({"repo_name": repo_name, "commits_since_2024": repo.get("commits_since_2024"),
+                          "scanned": scanned, "loose_gate": gated, "confirmed": confirmed,
+                          "seconds": int(time.time() - t0), "partial": partial,
+                          "reasons": json.dumps(dict(reasons))})
+            print(f"   checkpoint: {len(completed)} repos done")
         finally:
-            shutil.rmtree(temp_repo_dir, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     print("\n==================================================")
-    print(f" Step 2 Complete! Total High-Precision Prompt Commits: {total_prompt_commits}")
-    print(f" Saved to: {os.path.abspath(CSV_OUTPUT)}")
+    print(f" Step 2 complete. Total confirmed prompt-edit commits in file: {total}")
+    print(f" Saved to: {os.path.abspath(CSV_OUTPUT)}  |  funnel per repo: {STATS_OUTPUT}")
     print("==================================================")
 
 

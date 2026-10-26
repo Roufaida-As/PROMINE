@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 csv_path = Path(__file__).with_name("prompt_commits.csv")
+ROW_NUMBER = 1533
 
 
 def set_max_csv_field_limit():
@@ -16,23 +17,27 @@ def set_max_csv_field_limit():
 			max_int //= 10
 
 
-def count_non_empty_prompt_var_names(csv_path):
+def get_csv_stats(csv_path):
 	with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
 		reader = csv.DictReader(csv_file)
-		return sum(
-			1
-			for row in reader
-			if row.get("prompt_var_names", "").strip()
-		)
+		rows = list(reader)
+
+	return {
+		"total_rows": len(rows),
+		"non_empty_prompt_var_names": sum(
+			1 for row in rows if row.get("prompt_var_names", "").strip()
+		),
+		"rows_after_target": max(0, len(rows) - ROW_NUMBER),
+	}
 
 
 set_max_csv_field_limit()
 
-with csv_path.open("r", encoding="utf-8") as csv_file:
-	line_count = sum(1 for _ in csv_file)
+stats = get_csv_stats(csv_path)
 
-print(f"{csv_path.name} has {line_count} lines.")
+print(f"{csv_path.name} has {stats['total_rows']} data rows.")
 print(
 	f"Rows with non-empty prompt_var_names: "
-	f"{count_non_empty_prompt_var_names(csv_path)}"
+	f"{stats['non_empty_prompt_var_names']}"
 )
+print(f"Rows after row {ROW_NUMBER}: {stats['rows_after_target']}")
