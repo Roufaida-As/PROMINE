@@ -292,21 +292,21 @@ def confirm_real_edit(mod, path):
     """Strict second stage. Returns (ok, reason). Uses the SAME extraction as step2b, so a commit
     only qualifies if an existing prompt string really changed (not created/deleted/moved to
     tests/examples, not whitespace-only, not just a python {expr} change)."""
-    import step2b as s2b                      # lazy import (step2b imports hints from this file)
+    import step3 as s3                      # lazy import (step2b imports hints from this file)
     if mod.change_type != ModificationType.MODIFY:
         return False, "not_modify(add/delete/rename)"
-    if s2b._TEST.search(path) or s2b._EXAMPLE.search(path) or s2b._TOOLCFG.search(path):
+    if s3._TEST.search(path) or s3._EXAMPLE.search(path) or s3._TOOLCFG.search(path):
         return False, "test_example_or_toolconfig_path"
     old, new = mod.source_code_before or "", mod.source_code or ""
     if len(old) > MAX_FILE_CHARS or len(new) > MAX_FILE_CHARS:
         return False, "file_too_big"
-    o, n = s2b.extract(old, path), s2b.extract(new, path)
+    o, n = s3.extract(old, path), s3.extract(new, path)
     if o is None or n is None:
         return False, "unparsable_or_yaml_missing"
-    for ctype, _, _, a, b, mo, mn in s2b.pair_units(o, n):
+    for ctype, _, _, a, b, mo, mn in s3.pair_units(o, n):
         if ctype != "modified":
             continue
-        sig = s2b.signals(a, b, mo, mn)
+        sig = s3.signals(a, b, mo, mn)
         if not (sig["surface_only"] or sig["reorder_only"] or sig["interp_only"]):
             return True, "ok"
     return False, "no_real_prompt_edit(added/removed/surface-only/short strings)"

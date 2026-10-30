@@ -113,7 +113,7 @@ Use Python 3.10 or newer and ensure that `git` is available on `PATH`.
 Install the core dependencies:
 
 ```bash
-python -m pip install requests python-dotenv pydriller pandas pyyaml
+python -m pip install -r requirements.txt
 ```
 
 For optional Step 4 annotation, install the provider you intend to use:
@@ -126,7 +126,9 @@ python -m pip install anthropic
 python -m pip install openai
 ```
 
-This repository currently does not include a pinned `requirements.txt`.
+`requirements.txt` contains the dependencies used by the core mining pipeline.
+The Anthropic and OpenAI-compatible clients are intentionally optional; install
+only the provider you intend to use.
 For a reproducible paper release, record the exact Python and package versions
 used for the final run.
 
