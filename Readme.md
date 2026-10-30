@@ -298,6 +298,13 @@ Stage 4 annotations are model-assisted labels, not ground truth. They should
 be reviewed against a human-annotated sample before being used as definitive
 measurements.
 
+## License
+
+The PROMINE source code is released under the [MIT License](./LICENSE).
+Mined prompt text and other third-party repository content are not relicensed
+by this project; they remain subject to the licenses and terms of their
+original repositories.
+
 ## Responsible use and citation
 
 Use this tool only with repositories and prompt data that you are permitted to
