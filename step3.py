@@ -64,7 +64,7 @@ FUZZY_MAX_SIDE = 200             # skip fuzzy matching beyond 200x200 leftovers
 MIN_CHARS = 20                   # drop tiny strings such as "json", "text", "{prompt}"
 MIN_WORDS = 3
 
-# Path flags (units are KEPT, just flagged; Step 4 ignores them via stage_c_eligible)
+# Path flags (units are KEPT, just flagged; Step 4 ignores them via stage3_eligible)
 _TEST = re.compile(r"(?i)(^|[\\/])(tests?|__tests__|fixtures?|mocks?)[\\/]|"
                    r"(^|[\\/])(test_[^\\/]*|[^\\/]*_test\.py|conftest\.py)$")
 _EXAMPLE = re.compile(r"(?i)(^|[\\/])(examples?|docs?|documentation|cookbooks?|demos?|samples?|"
@@ -414,7 +414,7 @@ def process_commit(repo_dir, row):
                    "change_type": ctype, "match": match, "old": old, "new": new, **flags}
             if ctype == "modified":
                 rec.update(signals(old, new, mo, mn))
-                rec["stage_c_eligible"] = not (any(flags.values()) or rec["surface_only"]
+                rec["stage3_eligible"] = not (any(flags.values()) or rec["surface_only"]
                                                or rec["reorder_only"] or rec["interp_only"])
             yield rec
 
@@ -461,9 +461,9 @@ def main():
                                 "change_type": "skipped",
                                 "reason": f"error:{type(e).__name__}:{str(e)[:80]}"})
             if a.max_per_repo:
-                el = sorted((r for r in buf if r.get("stage_c_eligible")), key=lambda r: r["unit_id"])
+                el = sorted((r for r in buf if r.get("stage3_eligible")), key=lambda r: r["unit_id"])
                 for r in el[a.max_per_repo:]:
-                    r["stage_c_eligible"] = False
+                    r["stage3_eligible"] = False
                     r["excluded_reason"] = "repo_cap"
             with open(OUT, "a", encoding="utf-8") as f:       # write per repo = resume-safe
                 for rec in buf:
@@ -487,7 +487,7 @@ def main():
         print("surface_only :", sum(r["surface_only"] for r in mod), "/", len(mod))
         print("contract_sig :", sum(r["contract_signal"] for r in mod), "/", len(mod))
         print("rule hints   :", dict(Counter(h for r in mod for h in r["rule_hints"])))
-        el = [r for r in mod if r["stage_c_eligible"]]
+        el = [r for r in mod if r["stage3_eligible"]]
         print("excluded     :", {k: sum(bool(r[k]) for r in mod) for k in
               ("is_test", "is_example_doc", "is_tool_config", "surface_only", "reorder_only", "interp_only")})
         print("STAGE C ELIGIBLE:", len(el), "units in", len({r["commit_hash"] for r in el}), "commits")
