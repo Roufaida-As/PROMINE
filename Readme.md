@@ -264,7 +264,7 @@ python step4.py --export-csv pilot_sheet.csv
 
 ### Unit-level record contents
 
-Records in `step2b_units.jsonl` include identity fields such as repository,
+Records in `step3_units.jsonl` include identity fields such as repository,
 commit SHA, file, and `unit_id`; old/new prompt text; change type and matching
 method; anchor information; deterministic edit signals; path flags for tests,
 examples, documentation, and tool configuration; and eligibility fields.
