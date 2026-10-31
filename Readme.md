@@ -285,13 +285,12 @@ contents and interpretation.
 ## Dataset
 
 The complete PROMINE dataset is distributed separately because the generated
-files are too large for a normal GitHub repository. The versioned release will
-be archived on Zenodo:
+files are too large for a normal GitHub repository. The versioned release is
+archived on Zenodo:
 
-> **Dataset download:** [Zenodo record — to be added after publication](https://doi.org/10.5281/zenodo/REPLACE_WITH_RECORD_ID)
+> **Dataset download:** [PROMINE dataset on Zenodo](https://doi.org/10.5281/zenodo.23825792)
 
-After creating the Zenodo record, replace the placeholder URL above with the
-record's DOI or published record URL. The archive should contain:
+The archive contains:
 
 - `prompt_commits.csv` — confirmed prompt-edit commits and co-modified code
   diffs.
