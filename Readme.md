@@ -306,6 +306,11 @@ texts and other mined content remain subject to the licenses of their original
 repositories; the MIT license in this repository applies to the source code,
 not automatically to third-party dataset content.
 
+The code and dataset have separate Zenodo records:
+
+- **Dataset DOI:** [10.5281/zenodo.23825792](https://doi.org/10.5281/zenodo.23825792)
+- **Code DOI:** [10.5281/zenodo.23826269](https://doi.org/10.5281/zenodo.23826269)
+
 ## Output files
 
 | File | Description |
@@ -369,10 +374,11 @@ Use this tool only with repositories and prompt data that you are permitted to
 access and analyze. Respect GitHub's API terms, source-repository licenses, and
 the privacy requirements of any downstream dataset release.
 
-If you use PROMINE in academic work, cite the submitted manuscript or the
-repository using the metadata in [`CITATION.cff`](./CITATION.cff). The paper
-has not yet been accepted or published, so its final venue, DOI, and
-publication details are intentionally not claimed here:
+If you use PROMINE in academic work, cite the submitted manuscript, code, and
+dataset as appropriate. The paper has not yet been accepted or published, so
+its final venue, DOI, and publication details are intentionally not claimed
+here. Repository citation metadata is available in
+[`CITATION.cff`](./CITATION.cff).
 
 ```bibtex
 @unpublished{asbar2026promine,
@@ -381,5 +387,31 @@ publication details are intentionally not claimed here:
   author    = {Asbar, Roufaida and Bendraou, Reda},
   year      = {2026},
   note      = {Manuscript submitted for review}
+}
+```
+
+The released research artifacts can also be cited directly:
+
+```bibtex
+@misc{asbar2026prominecode,
+  author       = {Asbar, Roufaida and Bendraou, Reda},
+  title        = {PROMINE: A Tool and Dataset of Prompt Edits Mined from
+                  LLM-Integrated Python Repositories — Code},
+  year         = {2026},
+  publisher    = {Zenodo},
+  version      = {1.0.0},
+  doi          = {10.5281/zenodo.23826269},
+  url          = {https://doi.org/10.5281/zenodo.23826269}
+}
+
+@misc{asbar2026prominedataset,
+  author       = {Asbar, Roufaida and Bendraou, Reda},
+  title        = {PROMINE Dataset: Prompt Edits Mined from LLM-Integrated
+                  Python Repositories},
+  year         = {2026},
+  publisher    = {Zenodo},
+  version      = {1.0.0},
+  doi          = {10.5281/zenodo.23825792},
+  url          = {https://doi.org/10.5281/zenodo.23825792}
 }
 ```

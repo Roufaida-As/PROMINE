@@ -12,7 +12,14 @@ authors:
     email: reda.bendraou@udst.edu.qa
     affiliation: "University of Doha for Science and Technology (UDST), Doha, Qatar"
 repository-code: "https://github.com/Roufaida-As/PROMINE"
+doi: "10.5281/zenodo.23826269"
+version: "1.0.0"
+date-released: "2026-10-31"
 license: MIT
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.23825792"
+    description: "PROMINE dataset DOI"
 abstract: >
   PROMINE is an AST-based tool and dataset for mining prompt edits from
   LLM-integrated Python repositories.
