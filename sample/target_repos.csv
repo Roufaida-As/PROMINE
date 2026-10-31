@@ -1,0 +1,4 @@
+category,repo_name,clone_url,stars,commits_since_2024,default_branch,manifests,prompt_commit_hits
+sample,example-owner/example-repo,https://github.com/example-owner/example-repo.git,42,120,main,pyproject.toml,4
+sample,another-owner/another-repo,https://github.com/another-owner/another-repo.git,18,105,main,requirements.txt,3
+

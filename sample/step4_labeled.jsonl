@@ -1,0 +1,1 @@
+{"unit_id":"sample-unit-0001","repo_name":"example-owner/example-repo","old":{"R":"","D":"Answer the question.","Ctx":[],"E":[],"O":""},"new":{"R":"","D":"Answer the question and return JSON.","Ctx":[],"E":[],"O":"JSON"},"operators":[{"id":"E10","evidence":"return JSON"}],"contract_relevant":true,"contract_note":"The required output format changes to JSON.","confidence":"high"}

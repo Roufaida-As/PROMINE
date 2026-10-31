@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use PROMINE, please cite this repository and the accompanying manuscript."
+title: "PROMINE: A Tool and Dataset of Prompt Edits Mined from LLM-Integrated Python Repositories"
+type: software
+authors:
+  - family-names: Asbar
+    given-names: Roufaida
+    email: mr_asbar@esi.dz
+    affiliation: "École Nationale Supérieure d'Informatique (ESI), Algiers, Algeria"
+  - family-names: Bendraou
+    given-names: Reda
+    email: reda.bendraou@udst.edu.qa
+    affiliation: "University of Doha for Science and Technology (UDST), Doha, Qatar"
+repository-code: "https://github.com/Roufaida-As/PROMINE"
+license: MIT
+abstract: >
+  PROMINE is an AST-based tool and dataset for mining prompt edits from
+  LLM-integrated Python repositories.
+keywords:
+  - prompt engineering
+  - mining software repositories
+  - large language models
+  - dataset
+  - abstract syntax tree

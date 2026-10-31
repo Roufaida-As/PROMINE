@@ -1,6 +1,6 @@
 .env
 __pycache__/
-*.csv
 step1_pngs
 step2_pngs
 step3_pngs
+prompt_commits.csv

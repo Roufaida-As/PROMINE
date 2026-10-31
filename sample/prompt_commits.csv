@@ -1,0 +1,4 @@
+category,repo_name,commit_hash,author_date,msg,prompt_files,prompt_var_names,all_modified_files,consumer_candidate_diffs
+sample,example-owner/example-repo,0123456789abcdef0123456789abcdef01234567,2026-01-15 10:30:00,Clarify answer format,prompts.py,ANSWER_PROMPT,prompts.py;consumer.py,"{""consumer.py"": ""@@ -10,2 +10,2 @@\\n-parse_response(text)\\n+parse_structured_response(text)\\n""}"
+sample,another-owner/another-repo,abcdef0123456789abcdef0123456789abcdef01,2026-02-02 14:05:00,Require JSON output,prompt.py,OUTPUT_PROMPT,prompt.py,
+

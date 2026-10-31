@@ -248,6 +248,40 @@ Export a CSV for manual review:
 python step4.py --export-csv pilot_sheet.csv
 ```
 
+## Fast reviewer example
+
+Mining the full collection can take hours because it clones and analyzes many
+repositories. The [`sample/`](./sample/) directory contains a small,
+sanitized snapshot of the main CSV and JSONL output shapes so reviewers can
+inspect the format immediately.
+
+To reproduce the deterministic unit-extraction stage on one repository, use a
+repository already listed in `target_repos.csv`:
+
+```bash
+python step3.py --repo OWNER/REPO
+```
+
+Replace `OWNER/REPO` with a small public repository from that CSV. This command
+clones and processes only that repository; it does not mine all selected
+repositories and does not require an LLM API key. It appends records to
+`step3_units.jsonl` and updates `step3_checkpoint.json`.
+
+The expected console shape is:
+
+```text
+[1/1] OWNER/REPO: N commits
+   modified=M added=A removed=R skipped=S
+
+=== Summary ===
+change types : {'modified': M, 'added': A, 'removed': R, 'skipped': S}
+STAGE C ELIGIBLE: E units in C commits
+```
+
+The values depend on the selected repository and its current history, so they
+are not fixed. See [`sample/README.md`](./sample/README.md) for the fixture
+contents and interpretation.
+
 ## Output files
 
 | File | Description |
@@ -311,16 +345,17 @@ Use this tool only with repositories and prompt data that you are permitted to
 access and analyze. Respect GitHub's API terms, source-repository licenses, and
 the privacy requirements of any downstream dataset release.
 
-If you use PROMINE in academic work, cite the accompanying paper once its
-bibliographic information is finalized:
+If you use PROMINE in academic work, cite the submitted manuscript or the
+repository using the metadata in [`CITATION.cff`](./CITATION.cff). The paper
+has not yet been accepted or published, so its final venue, DOI, and
+publication details are intentionally not claimed here:
 
 ```bibtex
-@inproceedings{asbar2026promine,
+@unpublished{asbar2026promine,
   title     = {PROMINE: A Tool and Dataset of Prompt Edits Mined from
                LLM-Integrated Python Repositories},
   author    = {Asbar, Roufaida and Bendraou, Reda},
-  booktitle = {Proceedings of the IEEE/ACM International Conference on Mining
-               Software Repositories},
-  year      = {2026}
+  year      = {2026},
+  note      = {Manuscript submitted for review}
 }
 ```
