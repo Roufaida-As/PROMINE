@@ -282,6 +282,31 @@ The values depend on the selected repository and its current history, so they
 are not fixed. See [`sample/README.md`](./sample/README.md) for the fixture
 contents and interpretation.
 
+## Dataset
+
+The complete PROMINE dataset is distributed separately because the generated
+files are too large for a normal GitHub repository. The versioned release will
+be archived on Zenodo:
+
+> **Dataset download:** [Zenodo record — to be added after publication](https://doi.org/10.5281/zenodo/REPLACE_WITH_RECORD_ID)
+
+After creating the Zenodo record, replace the placeholder URL above with the
+record's DOI or published record URL. The archive should contain:
+
+- `prompt_commits.csv` — confirmed prompt-edit commits and co-modified code
+  diffs.
+- `step3_units.jsonl` — deterministic prompt-unit records.
+- `step4_labeled.jsonl` — optional model-assisted annotations, when included
+  in the release.
+- `target_repos.csv` and `step2_repo_stats.csv` — collection metadata and
+  mining statistics.
+
+The GitHub repository contains only the code, documentation, and a small
+sanitized [`sample/`](./sample/) fixture for immediate inspection. Prompt
+texts and other mined content remain subject to the licenses of their original
+repositories; the MIT license in this repository applies to the source code,
+not automatically to third-party dataset content.
+
 ## Output files
 
 | File | Description |

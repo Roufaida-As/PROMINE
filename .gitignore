@@ -4,3 +4,11 @@ step1_pngs
 step2_pngs
 step3_pngs
 prompt_commits.csv
+target_repos.csv
+step2_repo_stats.csv
+step3_units.jsonl
+step4_labeled.jsonl
+step1_seen.json
+step2_checkpoint.json
+step2_failed.json
+step3_checkpoint.json
